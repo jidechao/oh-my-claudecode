@@ -54,14 +54,17 @@ export interface CleanupTeamWorktreesResult {
   preserved: Array<{ workerName: string; path: string; reason: string }>;
 }
 
-interface WorktreeAgentsRecord {
-  workerName: string;
+interface WorktreeRootAgentsBackup {
   worktreePath: string;
-  agentsPath: string;
-  backupPath: string;
   hadOriginal: boolean;
-  installedHash: string;
+  originalContent?: string;
+  installedContent: string;
   installedAt: string;
+}
+
+export interface WorktreeRootAgentsRestoreResult {
+  restored: boolean;
+  reason?: string;
 }
 
 /** Get canonical native team worktree path for a worker. */
@@ -165,118 +168,103 @@ function getWorkerStateDir(repoRoot: string, teamName: string, workerName: strin
   return join(repoRoot, '.omc', 'state', 'team', sanitizeName(teamName), 'workers', sanitizeName(workerName));
 }
 
-function getAgentsRecordPath(repoRoot: string, teamName: string, workerName: string): string {
+function getRootAgentsBackupPath(repoRoot: string, teamName: string, workerName: string): string {
   return join(getWorkerStateDir(repoRoot, teamName, workerName), 'worktree-root-agents.json');
 }
 
-function getAgentsBackupPath(repoRoot: string, teamName: string, workerName: string): string {
-  return join(getWorkerStateDir(repoRoot, teamName, workerName), 'worktree-root-AGENTS.md.backup');
-}
-
-function hashContent(content: string): string {
-  return createHash('sha256').update(content).digest('hex');
-}
-
-function readAgentsRecord(repoRoot: string, teamName: string, workerName: string): WorktreeAgentsRecord | null {
-  const recordPath = getAgentsRecordPath(repoRoot, teamName, workerName);
-  if (!existsSync(recordPath)) return null;
+function readRootAgentsBackup(
+  repoRoot: string,
+  teamName: string,
+  workerName: string,
+): WorktreeRootAgentsBackup | null {
+  const backupPath = getRootAgentsBackupPath(repoRoot, teamName, workerName);
+  if (!existsSync(backupPath)) return null;
   try {
-    return JSON.parse(readFileSync(recordPath, 'utf-8')) as WorktreeAgentsRecord;
-  } catch {
+    return JSON.parse(readFileSync(backupPath, 'utf-8')) as WorktreeRootAgentsBackup;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[omc] warning: worktree root AGENTS backup parse error: ${msg}\n`);
     return null;
   }
 }
 
-function removeFileIfExists(path: string): void {
-  try {
-    if (existsSync(path)) unlinkSync(path);
-  } catch { /* best-effort */ }
-}
-
 /**
- * Install the worker overlay into the worktree root so Codex/Claude sees the
- * team contract through normal AGENTS.md discovery. Existing root instructions
- * are backed up under leader-owned state and restored by cleanup when unchanged.
+ * Install the generated worker overlay into the root of a native worker worktree.
+ * Existing root AGENTS.md content is backed up under leader-owned state so cleanup
+ * can safely restore it. Reinstalling preserves the first original backup instead
+ * of treating an older managed overlay as user content.
  */
 export function installWorktreeRootAgents(
   teamName: string,
   workerName: string,
   repoRoot: string,
   worktreePath: string,
-  content: string,
+  overlayContent: string,
 ): void {
   validateResolvedPath(worktreePath, repoRoot);
   const agentsPath = join(worktreePath, 'AGENTS.md');
   validateResolvedPath(agentsPath, repoRoot);
-  const stateDir = getWorkerStateDir(repoRoot, teamName, workerName);
-  ensureDirWithMode(stateDir);
-  const backupPath = getAgentsBackupPath(repoRoot, teamName, workerName);
-  const recordPath = getAgentsRecordPath(repoRoot, teamName, workerName);
-  const previous = readAgentsRecord(repoRoot, teamName, workerName);
-  const currentExists = existsSync(agentsPath);
-  const currentContent = currentExists ? readFileSync(agentsPath, 'utf-8') : '';
+  const backupPath = getRootAgentsBackupPath(repoRoot, teamName, workerName);
+  validateResolvedPath(backupPath, repoRoot);
+  ensureDirWithMode(getWorkerStateDir(repoRoot, teamName, workerName));
 
-  let hadOriginal = currentExists;
-  if (previous) {
-    if (currentExists && hashContent(currentContent) !== previous.installedHash) {
-      const error = new Error(`worktree_dirty: preserving edited worktree-root AGENTS.md at ${agentsPath}`);
-      (error as Error & { code?: string }).code = 'worktree_dirty';
-      throw error;
-    }
-    hadOriginal = previous.hadOriginal;
-  } else if (currentExists) {
-    writeFileSync(backupPath, currentContent, 'utf-8');
-  } else {
-    removeFileIfExists(backupPath);
+  const previous = readRootAgentsBackup(repoRoot, teamName, workerName);
+  const currentContent = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf-8') : undefined;
+  if (previous && currentContent !== undefined && currentContent !== previous.installedContent) {
+    const error = new Error(`agents_dirty: preserving modified worktree root AGENTS.md at ${agentsPath}`);
+    (error as Error & { code?: string }).code = 'agents_dirty';
+    throw error;
   }
 
-  writeFileSync(agentsPath, content, 'utf-8');
-  atomicWriteJson(recordPath, {
-    workerName,
-    worktreePath,
-    agentsPath,
-    backupPath,
-    hadOriginal,
-    installedHash: hashContent(content),
-    installedAt: new Date().toISOString(),
-  } satisfies WorktreeAgentsRecord);
+  const backup: WorktreeRootAgentsBackup = previous
+    ? { ...previous, worktreePath, installedContent: overlayContent, installedAt: new Date().toISOString() }
+    : {
+      worktreePath,
+      hadOriginal: currentContent !== undefined,
+      ...(currentContent !== undefined ? { originalContent: currentContent } : {}),
+      installedContent: overlayContent,
+      installedAt: new Date().toISOString(),
+    };
+  atomicWriteJson(backupPath, backup);
+  writeFileSync(agentsPath, overlayContent, 'utf-8');
 }
 
-/** Restore or remove a managed worktree-root AGENTS.md before worktree cleanup. */
+/**
+ * Restore or remove a managed worktree-root AGENTS.md when it is still unchanged.
+ * If a worker edited AGENTS.md, leave it and report agents_dirty so cleanup can
+ * preserve the worktree instead of overwriting user changes.
+ */
 export function restoreWorktreeRootAgents(
   teamName: string,
   workerName: string,
   repoRoot: string,
-  worktreePath: string,
-): void {
-  const record = readAgentsRecord(repoRoot, teamName, workerName);
-  if (!record) return;
-  validateResolvedPath(worktreePath, repoRoot);
-  const agentsPath = join(worktreePath, 'AGENTS.md');
+  worktreePath?: string,
+): WorktreeRootAgentsRestoreResult {
+  const backupPath = getRootAgentsBackupPath(repoRoot, teamName, workerName);
+  validateResolvedPath(backupPath, repoRoot);
+  const backup = readRootAgentsBackup(repoRoot, teamName, workerName);
+  if (!backup) return { restored: false, reason: 'no_backup' };
+
+  const resolvedWorktreePath = worktreePath ?? backup.worktreePath;
+  validateResolvedPath(resolvedWorktreePath, repoRoot);
+  const agentsPath = join(resolvedWorktreePath, 'AGENTS.md');
   validateResolvedPath(agentsPath, repoRoot);
+  const currentContent = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf-8') : undefined;
 
-  if (existsSync(agentsPath)) {
-    const current = readFileSync(agentsPath, 'utf-8');
-    if (hashContent(current) !== record.installedHash) {
-      const error = new Error(`worktree_dirty: preserving edited worktree-root AGENTS.md at ${agentsPath}`);
-      (error as Error & { code?: string }).code = 'worktree_dirty';
-      throw error;
-    }
+  if (currentContent !== undefined && currentContent !== backup.installedContent) {
+    return { restored: false, reason: 'agents_dirty' };
   }
 
-  if (record.hadOriginal) {
-    if (!existsSync(record.backupPath)) {
-      const error = new Error(`worktree_agents_backup_missing: ${record.backupPath}`);
-      (error as Error & { code?: string }).code = 'worktree_agents_backup_missing';
-      throw error;
-    }
-    writeFileSync(agentsPath, readFileSync(record.backupPath, 'utf-8'), 'utf-8');
-  } else {
-    removeFileIfExists(agentsPath);
+  if (backup.hadOriginal) {
+    writeFileSync(agentsPath, backup.originalContent ?? '', 'utf-8');
+  } else if (existsSync(agentsPath)) {
+    unlinkSync(agentsPath);
   }
 
-  removeFileIfExists(getAgentsRecordPath(repoRoot, teamName, workerName));
-  removeFileIfExists(record.backupPath);
+  try {
+    unlinkSync(backupPath);
+  } catch { /* backup already gone */ }
+  return { restored: true };
 }
 
 /** Read worktree metadata, including legacy metadata for cleanup compatibility. */
@@ -456,8 +444,11 @@ export function removeWorkerWorktree(
   const wtPath = getWorktreePath(repoRoot, teamName, workerName);
   const branch = getBranchName(teamName, workerName);
 
-  if (existsSync(wtPath)) {
-    restoreWorktreeRootAgents(teamName, workerName, repoRoot, wtPath);
+  const agentsRestore = restoreWorktreeRootAgents(teamName, workerName, repoRoot, wtPath);
+  if (agentsRestore.reason === 'agents_dirty') {
+    const error = new Error(`agents_dirty: preserving modified worktree root AGENTS.md at ${join(wtPath, 'AGENTS.md')}`);
+    (error as Error & { code?: string }).code = 'agents_dirty';
+    throw error;
   }
 
   if (existsSync(wtPath) && isWorktreeDirty(wtPath)) {

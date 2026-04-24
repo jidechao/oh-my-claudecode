@@ -72,7 +72,13 @@ import {
   generatePromptModeStartupPrompt,
 } from './worker-bootstrap.js';
 import { queueInboxInstruction, type DispatchOutcome } from './mcp-comm.js';
-import { cleanupTeamWorktrees, ensureWorkerWorktree, installWorktreeRootAgents, normalizeTeamWorktreeMode, type TeamWorktreeMode } from './git-worktree.js';
+import {
+  cleanupTeamWorktrees,
+  ensureWorkerWorktree,
+  installWorktreeRootAgents,
+  normalizeTeamWorktreeMode,
+  type TeamWorktreeMode,
+} from './git-worktree.js';
 import { formatOmcCliInvocation } from '../utils/omc-cli-rendering.js';
 import { createSwallowedErrorLogger } from '../lib/swallowed-error.js';
 import type { CanonicalTeamRole, PluginConfig, RoleAssignment, TeamRoleAssignmentSpec } from '../shared/types.js';
@@ -884,7 +890,8 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
     });
     const worktree = workerWorktrees.get(wName);
     if (worktree) {
-      installWorktreeRootAgents(sanitized, wName, leaderCwd, worktree.path, await readFile(overlayPath, 'utf-8'));
+      const overlayContent = await readFile(overlayPath, 'utf-8');
+      installWorktreeRootAgents(sanitized, wName, leaderCwd, worktree.path, overlayContent);
     }
   }
 
