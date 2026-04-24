@@ -15,7 +15,7 @@ export interface CliAgentContract {
   parseOutput(rawOutput: string): string;
   /** Whether this agent supports a prompt/headless mode that bypasses TUI input */
   supportsPromptMode?: boolean;
-  /** CLI flag for prompt mode (e.g., '-p' for gemini headless mode) */
+  /** CLI flag for prompt mode (e.g., '-i' for gemini) */
   promptModeFlag?: string;
 }
 
@@ -183,9 +183,6 @@ const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
     binary: 'codex',
     installInstructions: 'Install Codex CLI: npm install -g @openai/codex',
     supportsPromptMode: true,
-    // Codex uses the `exec` subcommand for non-interactive runs that exit
-    // on completion. The prompt still remains positional after options:
-    //   codex exec [OPTIONS] [PROMPT]
     buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
       const args = ['exec', '--dangerously-bypass-approvals-and-sandbox'];
       if (model) args.push('--model', model);
@@ -463,8 +460,8 @@ export function getPromptModeArgs(agentType: CliAgentType, instruction: string):
   if (!contract.supportsPromptMode) {
     return [];
   }
-  // If a flag is defined (e.g. gemini's '-p'), prepend it; otherwise the
-  // instruction is passed as a positional argument (e.g. codex exec [PROMPT]).
+  // If a flag is defined (e.g. gemini's '-i'), prepend it; otherwise the
+  // instruction is passed as a positional argument (e.g. codex [PROMPT]).
   if (contract.promptModeFlag) {
     return [contract.promptModeFlag, instruction];
   }

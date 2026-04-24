@@ -10,6 +10,13 @@ export interface WorkerBootstrapParams {
     }>;
     bootstrapInstructions?: string;
     cwd: string;
+    /**
+     * Worker-facing root used in instructions. The default is the leader cwd
+     * relative global state root (`.omc/state`); non-default values are treated as
+     * alternate global state roots and still include `team/<team>` below them,
+     * matching dispatch trigger semantics for `OMC_TEAM_STATE_ROOT` placeholders.
+     */
+    instructionStateRoot?: string;
 }
 export declare function generateTriggerMessage(teamName: string, workerName: string, teamStateRoot?: string): string;
 export declare function generatePromptModeStartupPrompt(teamName: string, workerName: string, teamStateRoot?: string, cliOutputContract?: string): string;
